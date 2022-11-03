@@ -1,88 +1,47 @@
+# Use the latest 2.1 version of CircleCI pipeline process engine.
+# See: https://circleci.com/docs/2.0/configuration-reference
 version: 2.1
+
+# Orbs are reusable packages of CircleCI configuration that you may share across projects, enabling you to create encapsulated, parameterized commands, jobs, and executors that can be used across multiple projects.
+# See: https://circleci.com/docs/2.0/orb-intro/
+orbs:
+  # The python orb contains a set of prepackaged CircleCI configuration you can use repeatedly in your configuration files
+  # Orb commands and jobs help you with common scripting around a language/tool
+  # so you dont have to copy and paste it everywhere.
+  # See the orb documentation here: https://circleci.com/developer/orbs/orb/circleci/python
+  python: circleci/python@1.5.0
+
+# Define a job to be invoked later in a workflow.
+# See: https://circleci.com/docs/2.0/configuration-reference/#jobs
 jobs:
-  test:
+  build-and-test: # This is the name of the job, feel free to change it to better match what you're trying to do!
+    # These next lines defines a Docker executors: https://circleci.com/docs/2.0/executor-types/
+    # You can specify an image from Dockerhub or use one of the convenience images from CircleCI's Developer Hub
+    # A list of available CircleCI Docker convenience images are available here: https://circleci.com/developer/images/image/cimg/python
+    # The executor is the environment in which the steps below will be executed - below will use a python 3.10.2 container
+    # Change the version below to your required version of python
     docker:
-      - image: ubuntu:bionic
-        environment:
-          CONDA_PREFIX: /root/tools/miniconda3
-          MINTPY_HOME: /root/tools/MintPy
-        user: root
-    working_directory: /root/tools/MintPy
-    resource_class: large
+      - image: cimg/python:3.10.2
+    # Checkout the code as the first step. This is a dedicated CircleCI step.
+    # The python orb's install-packages step will install the dependencies from a Pipfile via Pipenv by default.
+    # Here we're making sure we use just use the system-wide pip. By default it uses the project root's requirements.txt.
+    # Then run your tests!
+    # CircleCI will report the results back to your VCS provider.
     steps:
       - checkout
+      - python/install-packages:
+          pkg-manager: pip
+          # app-dir: ~/project/package-directory/  # If you're requirements.txt isn't in the root directory.
+          # pip-dependency-file: test-requirements.txt  # if you have a different name for your requirements file, maybe one that combines your runtime and test requirements.
       - run:
-          name: Setting Up Environment with Miniconda
-          command: |
-            apt update
-            apt-get update --yes && apt-get upgrade --yes
-            apt-get install --yes git wget
-            # download and install miniconda3
-            mkdir -p ${HOME}/tools
-            cd ${HOME}/tools
-            wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
-            bash Miniconda3-latest-Linux-x86_64.sh -b -p ${HOME}/tools/miniconda3
-            ${HOME}/tools/miniconda3/bin/conda init bash
-            # add conda-forge channel and install mamba
-            ${HOME}/tools/miniconda3/bin/conda config --add channels conda-forge
-            ${HOME}/tools/miniconda3/bin/conda config --set channel_priority strict
-            ${HOME}/tools/miniconda3/bin/conda install --yes mamba
-            cat ${HOME}/.condarc
+          name: Run tests
+          # This assumes pytest is installed via the install-package step above
+          command: pytest
 
-      - run:
-          name: Installing MintPy
-          no_output_timeout: 30m
-          command: |
-            export PYTHONUNBUFFERED=1
-            # setup environment variable
-            export PATH=${CONDA_PREFIX}/bin:${PATH}
-            # install dependencies and source code
-            source activate root
-            mamba install --verbose --yes gdal">=3" --file ${MINTPY_HOME}/requirements.txt
-            python -m pip install ${MINTPY_HOME}
-            # test installation
-            smallbaselineApp.py -v
-            tropo_pyaps3.py -h
-            solid_earth_tides.py -h
-
-      - run:
-          name: Unit Testing
-          command: |
-            export PATH=${CONDA_PREFIX}/bin:${PATH}
-            ${MINTPY_HOME}/tests/asc_desc2horz_vert.py
-            ${MINTPY_HOME}/tests/objects/ionex.py
-            ${MINTPY_HOME}/tests/objects/euler_pole.py
-
-      - run:
-          name: Workflow Testing 1/4 - FernandinaSenDT128 (ISCE/topsStack)
-          command: |
-            export PATH=${CONDA_PREFIX}/bin:${PATH}
-            mkdir -p ${HOME}/data
-            ${MINTPY_HOME}/tests/smallbaselineApp.py --dir ${HOME}/data --dset FernandinaSenDT128
-
-      - run:
-          name: Workflow Testing 2/4 - SanFranSenDT42 (ARIA)
-          command: |
-            export PATH=${CONDA_PREFIX}/bin:${PATH}
-            mkdir -p ${HOME}/data
-            ${MINTPY_HOME}/tests/smallbaselineApp.py --dir ${HOME}/data --dset SanFranSenDT42
-
-      - run:
-          name: Workflow Testing 3/4 - WellsEnvD2T399 (Gamma)
-          command: |
-            export PATH=${CONDA_PREFIX}/bin:${PATH}
-            mkdir -p ${HOME}/data
-            ${MINTPY_HOME}/tests/smallbaselineApp.py --dir ${HOME}/data --dset WellsEnvD2T399
-
-      - run:
-          name: Workflow Testing 4/4 - WCapeSenAT29 (SNAP)
-          command: |
-            export PATH=${CONDA_PREFIX}/bin:${PATH}
-            mkdir -p ${HOME}/data
-            ${MINTPY_HOME}/tests/smallbaselineApp.py --dir ${HOME}/data --dset WCapeSenAT29
-
+# Invoke jobs via workflows
+# See: https://circleci.com/docs/2.0/configuration-reference/#workflows
 workflows:
-  version: 2
-  test:
+  sample: # This is the name of the workflow, feel free to change it to better match your workflow.
+    # Inside the workflow, you define the jobs you want to run.
     jobs:
-      - test
+      - build-and-test
