@@ -13,47 +13,51 @@ from mintpy.utils.arg_utils import create_argument_parser
 #########################################################################
 NOTE = """
   For each interferogram, the unwrapped interferogram, coherence, and metadata the file name is required e.g.:
-  1) S1AA_20161223T070700_20170116T070658_VVP024_INT80_G_ueF_74C2_unw_phase.tif
-  2) S1AA_20161223T070700_20170116T070658_VVP024_INT80_G_ueF_74C2_corr.tif
-  3) S1AA_20161223T070700_20170116T070658_VVP024_INT80_G_ueF_74C2.txt
+  1) date1-date2.geo.unw.tif
+  2) date1-date2.cc.unw.tif
+  3) metadata.txt
 
-  A DEM filename is needed and a incidence angle filename is recommended  e.g.:
-  1) S1AA_20161223T070700_20170116T070658_VVP024_INT80_G_ueF_74C2_dem.tif
-  2) S1AA_20161223T070700_20170116T070658_VVP024_INT80_G_ueF_74C2_lv_theta.tif
+  A DEM filename is needed and a E,N,U filename is recommended  e.g.:
+  1) track_ID.geo.hgt.tif 
+  2) track_ID.geo.E.tif 
+  3) track_ID.geo.N.tif 
+  4) track_ID.geo.U.tif
 
   This script will read these files, read the geospatial metadata from GDAL,
-  find the corresponding HyP3 metadata file (for interferograms and coherence),
+  use general metadata file (for interferograms and coherence),
   and write to a ROI_PAC .rsc metadata file with the same name as the input file with suffix .rsc,
-  e.g. S1AA_20161223T070700_20170116T070658_VVP024_INT80_G_ueF_74C2_unw_phase.tif.rsc
+  e.g. date1-date2.geo.unw.tiff.rsc
 
   Here is an example of how your HyP3 files should look:
 
   Before loading:
-      For each interferogram, 3 files are needed:
-          S1AA_20161223T070700_20170116T070658_VVP024_INT80_G_ueF_74C2_unw_phase_clip.tif
-          S1AA_20161223T070700_20170116T070658_VVP024_INT80_G_ueF_74C2_corr_clip.tif
-          S1AA_20161223T070700_20170116T070658_VVP024_INT80_G_ueF_74C2.txt
-      For the geometry file 2 file are recommended:
-          S1AA_20161223T070700_20170116T070658_VVP024_INT80_G_ueF_74C2_dem_clip.tif     (required)
-          S1AA_20161223T070700_20170116T070658_VVP024_INT80_G_ueF_74C2_lv_theta_clip.tif (optional but recommended)
+      For each interferogram, 2 files are needed:
+          date1-date2.geo.unw.tif
+          date1-date2.geo.cc.tif
+      For the geometry file 4 file are recommended:
+          track_ID.geo.hgt.tif 
+          track_ID.geo.E.tif 
+          track_ID.geo.N.tif 
+          track_ID.geo.U.tif
 
-  After running prep_hyp3.py:
+  After running prep_licsar.py:
       For each interferogram:
-          S1AA_20161223T070700_20170116T070658_VVP024_INT80_G_ueF_74C2_unw_phase_clip.tif
-          S1AA_20161223T070700_20170116T070658_VVP024_INT80_G_ueF_74C2_unw_phase_clip.tif.rsc
-          S1AA_20161223T070700_20170116T070658_VVP024_INT80_G_ueF_74C2_corr_clip.tif
-          S1AA_20161223T070700_20170116T070658_VVP024_INT80_G_ueF_74C2_corr_clip.tif.rsc
-          S1AA_20161223T070700_20170116T070658_VVP024_INT80_G_ueF_74C2.txt
+          date1-date2.geo.unw.tif
+          date1-date2.geo.unw.tif.rsc
+          date1-date2.geo.cc.tif
+          date1-date2.geo.cc.tif.rsc
       For the input geometry files:
-          S1AA_20161223T070700_20170116T070658_VVP024_INT80_G_ueF_74C2_dem_clip.tif
-          S1AA_20161223T070700_20170116T070658_VVP024_INT80_G_ueF_74C2_dem_clip.tif.rsc
-          S1AA_20161223T070700_20170116T070658_VVP024_INT80_G_ueF_74C2_lv_theta_clip.tif
-          S1AA_20161223T070700_20170116T070658_VVP024_INT80_G_ueF_74C2_lv_theta_clip.tif.rsc
+          track_ID.geo.hgt.tif
+          track_ID.geo.hgt.tif.rsc 
+          track_ID.geo.E.tif
+          track_ID.geo.E.tif.rsc
+          track_ID.geo.N.tif 
+          track_ID.geo.N.tif.rsc
+          track_ID.geo.U.tif
+          track_ID.geo.U.tif.rsc
 
   Notes:
-    HyP3 currently only supports generation of Sentinel-1 interferograms, so
-    some Sentinel-1 metadata is hard-coded. If HyP3 adds processing of interferograms
-    from other satellites, changes will be needed.
+        LICSAR new version of data has new header data which can be integrated but here is not implemented , the data suffix is .metadata
 """
 
 EXAMPLE = """example:
