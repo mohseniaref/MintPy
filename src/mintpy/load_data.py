@@ -24,17 +24,17 @@ from mintpy.objects.stackDict import geometryDict, ifgramDict, ifgramStackDict
 from mintpy.utils import ptime, readfile, utils as ut
 
 #################################################################
-PROCESSOR_LIST = ['isce', 'aria', 'hyp3', 'gmtsar', 'snap', 'gamma', 'roipac', 'cosicorr', 'nisar','licsar']
+PROCESSOR_LIST = ['isce', 'aria', 'hyp3', 'gmtsar', 'snap', 'gamma', 'roipac', 'cosicorr', 'nisar', 'licsar']
 
 # primary observation dataset names
 OBS_DSET_NAMES = ['unwrapPhase', 'rangeOffset', 'azimuthOffset']
 
 IFG_DSET_NAME2TEMPLATE_KEY = {
-    'unwrapPhase'     : 'mintpy.load.unwFile',
-    'coherence'       : 'mintpy.load.corFile',
+    'unwrapPhase': 'mintpy.load.unwFile',  # e.g., date1-date2.geo.unw.tif
+    'coherence': 'mintpy.load.corFile',   # e.g., date1-date2.geo.cc.tif
     'connectComponent': 'mintpy.load.connCompFile',
-    'wrapPhase'       : 'mintpy.load.intFile',
-    'magnitude'       : 'mintpy.load.magFile',
+    'wrapPhase': 'mintpy.load.intFile',
+    'magnitude': 'mintpy.load.magFile',
 }
 
 ION_DSET_NAME2TEMPLATE_KEY = {
@@ -52,16 +52,16 @@ OFF_DSET_NAME2TEMPLATE_KEY = {
 }
 
 GEOM_DSET_NAME2TEMPLATE_KEY = {
-    'height'          : 'mintpy.load.demFile',
-    'latitude'        : 'mintpy.load.lookupYFile',
-    'longitude'       : 'mintpy.load.lookupXFile',
-    'azimuthCoord'    : 'mintpy.load.lookupYFile',
-    'rangeCoord'      : 'mintpy.load.lookupXFile',
-    'incidenceAngle'  : 'mintpy.load.incAngleFile',
-    'azimuthAngle'    : 'mintpy.load.azAngleFile',
-    'shadowMask'      : 'mintpy.load.shadowMaskFile',
-    'waterMask'       : 'mintpy.load.waterMaskFile',
-    'bperp'           : 'mintpy.load.bperpFile',
+    'height': 'mintpy.load.demFile',      # e.g., track_ID.geo.hgt.tif
+    'latitude': 'mintpy.load.lookupYFile',
+    'longitude': 'mintpy.load.lookupXFile',
+    'azimuthCoord': 'mintpy.load.lookupYFile',
+    'rangeCoord': 'mintpy.load.lookupXFile',
+    'incidenceAngle': 'mintpy.load.incAngleFile',
+    'azimuthAngle': 'mintpy.load.azAngleFile',
+    'shadowMask': 'mintpy.load.shadowMaskFile',
+    'waterMask': 'mintpy.load.waterMaskFile',
+    'bperp': 'mintpy.load.bperpFile',
 }
 
 
@@ -604,180 +604,38 @@ def prepare_metadata(iDict):
     processor = iDict['processor']
     script_name = f'prep_{processor}.py'
     print('-'*50)
-    print(f'prepare metadata files for {processor} products')
+    print(f'Prepare metadata files for {processor} products')
 
     if processor not in PROCESSOR_LIST:
-        msg = f'un-recognized InSAR processor: {processor}'
-        msg += f'\nsupported processors: {PROCESSOR_LIST}'
+        msg = f'Unrecognized InSAR processor: {processor}'
+        msg += f'\nSupported processors: {PROCESSOR_LIST}'
         raise ValueError(msg)
 
-    # import prep_{processor}
+    # Import prep_{processor}
     prep_module = importlib.import_module(f'mintpy.cli.prep_{processor}')
 
-    if processor in ['gamma', 'hyp3', 'roipac', 'snap', 'cosicorr','licsar']:
-        # run prep_module
+    if processor == 'licsar':
+        # Validate required files
+        metadata_file = os.path.join(os.path.dirname(iDict['mintpy.load.unwFile']), 'metadata.txt')
+        baseline_file = os.path.join(os.path.dirname(iDict['mintpy.load.unwFile']), 'baselines.txt')
+        if not os.path.exists(metadata_file) or not os.path.exists(baseline_file):
+            raise FileNotFoundError(f"Required LiCSAR files not found: {metadata_file}, {baseline_file}")
+
+        # Run prep_licsar
+        iargs = [iDict['mintpy.load.unwFile'], metadata_file, baseline_file]
+        ut.print_command_line(script_name, iargs)
+        prep_module.main(iargs)
+
+    elif processor in ['gamma', 'hyp3', 'roipac', 'snap', 'cosicorr']:
+        # Run prep_module
         for key in [i for i in iDict.keys()
                     if (i.startswith('mintpy.load.')
                         and i.endswith('File')
                         and i != 'mintpy.load.metaFile')]:
             if len(glob.glob(str(iDict[key]))) > 0:
-                # print command line
                 iargs = [iDict[key]]
-                if processor == 'gamma':
-                    if iDict['PLATFORM']:
-                        iargs += ['--sensor', iDict['PLATFORM'].lower()]
-                    # add DEM file to faciliate the checking and metadata extraction for geocoded datasets
-                    iargs += ['--dem', iDict['mintpy.load.demFile']]
-
-                elif processor == 'cosicorr':
-                    iargs += ['--metadata', iDict['mintpy.load.metaFile']]
                 ut.print_command_line(script_name, iargs)
-                # run
                 prep_module.main(iargs)
-
-    elif processor == 'nisar':
-        dem_file = iDict['mintpy.load.demFile']
-        gunw_files = iDict['mintpy.load.unwFile']
-        water_mask = iDict['mintpy.load.waterMaskFile']
-
-        # run prep_*.py
-        iargs = ['-i', gunw_files, '-d', dem_file]
-
-        if os.path.exists(water_mask):
-            iargs = iargs + ['--mask', water_mask]
-
-        if iDict['mintpy.subset.yx']:
-            warnings.warn('Subset in Y/X is not implemented for NISAR. \n'
-                          'There might be shift in the coordinates of different products. \n'
-                          'Use lat/lon instead.')
-        if iDict['mintpy.subset.lalo']:
-            lalo = iDict['mintpy.subset.lalo'].split(',')
-            lats = lalo[0].split(':')
-            lons = lalo[1].split(':')
-            iargs = iargs + ['--sub-lat', lats[0], lats[1], '--sub-lon', lons[0], lons[1]]
-
-        ut.print_command_line(script_name, iargs)
-        try:
-            prep_module.main(iargs)
-        except:
-            warnings.warn('prep_nisar.py failed. Assuming its result exists and continue...')
-
-    elif processor == 'isce':
-        from mintpy.utils import isce_utils, s1_utils
-
-        # --meta-file
-        meta_files = sorted(glob.glob(iDict['mintpy.load.metaFile']))
-        if len(meta_files) > 0:
-            meta_file = meta_files[0]
-        else:
-            warnings.warn('No input metadata file found: {}'.format(iDict['mintpy.load.metaFile']))
-            meta_file = 'auto'
-
-        # --baseline-dir / --geometry-dir
-        baseline_dir = iDict['mintpy.load.baselineDir']
-        geom_dir = os.path.dirname(iDict['mintpy.load.demFile'])
-        geom_dir = os.path.abspath(geom_dir)
-
-        # --dset-dir / --file-pattern
-        obs_keys = [
-            'mintpy.load.unwFile',
-            'mintpy.load.ionUnwFile',
-            'mintpy.load.rgOffFile',
-            'mintpy.load.azOffFile',
-        ]
-        obs_paths = [iDict[key] for key in obs_keys if iDict[key].lower() != 'auto']
-        obs_paths = [x for x in obs_paths if len(glob.glob(x)) > 0]
-
-        # --geom-files for the basenames only
-        geom_names = ['dem', 'lookupY', 'lookupX', 'incAngle', 'azAngle', 'shadowMask', 'waterMask']
-        geom_keys = [f'mintpy.load.{i}File' for i in geom_names]
-        geom_files = [os.path.basename(iDict[key]) for key in geom_keys
-                      if iDict.get(key, 'auto') not in ['auto', 'None', 'no',  None, False]]
-
-        # compose list of input arguments
-        iargs = ['-m', meta_file, '-g', geom_dir]
-        if baseline_dir:
-            iargs += ['-b', baseline_dir]
-        if len(obs_paths) > 0:
-            iargs += ['-f'] + obs_paths
-        if geom_files:
-            iargs += ['--geom-files'] + geom_files
-
-        # run module
-        ut.print_command_line(script_name, iargs)
-        try:
-            prep_module.main(iargs)
-        except:
-            warnings.warn('prep_isce.py failed. Assuming its result exists and continue...')
-
-        # [optional] for topsStack: SAFE_files.txt --> S1A/B_date.txt
-        if os.path.isfile(meta_file) and isce_utils.get_processor(meta_file) == 'topsStack':
-            safe_list_file = os.path.join(os.path.dirname(os.path.dirname(meta_file)), 'SAFE_files.txt')
-            if os.path.isfile(safe_list_file):
-                s1_utils.get_s1ab_date_list_file(
-                    mintpy_dir=os.getcwd(),
-                    safe_list_file=safe_list_file,
-                    print_msg=True)
-
-    elif processor == 'aria':
-        ## compose input arguments
-        # use the default template file if exists & input
-        default_temp_files = [fname for fname in iDict['template_file']
-                              if fname.endswith('smallbaselineApp.cfg')]
-        if len(default_temp_files) > 0:
-            temp_file = default_temp_files[0]
-        else:
-            temp_file = iDict['template_file'][0]
-        iargs = ['--template', temp_file]
-
-        # file name/dir/path
-        ARG2OPT_DICT = {
-            '--stack-dir'           : 'mintpy.load.unwFile',
-            '--unwrap-stack-name'   : 'mintpy.load.unwFile',
-            '--coherence-stack-name': 'mintpy.load.corFile',
-            '--conn-comp-stack-name': 'mintpy.load.connCompFile',
-            '--dem'                 : 'mintpy.load.demFile',
-            '--incidence-angle'     : 'mintpy.load.incAngleFile',
-            '--azimuth-angle'       : 'mintpy.load.azAngleFile',
-            '--water-mask'          : 'mintpy.load.waterMaskFile',
-        }
-
-        for arg_name, opt_name in ARG2OPT_DICT.items():
-            arg_value = iDict.get(opt_name, 'auto')
-            if arg_value.lower() not in ['auto', 'no', 'none']:
-                if arg_name.endswith('dir'):
-                    iargs += [arg_name, os.path.dirname(arg_value)]
-                elif arg_name.endswith('name'):
-                    iargs += [arg_name, os.path.basename(arg_value)]
-                else:
-                    iargs += [arg_name, arg_value]
-
-        # configurations
-        if iDict['compression']:
-            iargs += ['--compression', iDict['compression']]
-        if iDict['updateMode']:
-            iargs += ['--update']
-
-        ## run
-        ut.print_command_line(script_name, iargs)
-        prep_module.main(iargs)
-
-    elif processor == 'gmtsar':
-        # use the custom template file if exists & input
-        custom_temp_files = [fname for fname in iDict['template_file']
-                             if not fname.endswith('smallbaselineApp.cfg')]
-        if len(custom_temp_files) == 0:
-            raise FileExistsError('Custom template file NOT found and is required for GMTSAR!')
-
-        # run prep_*.py
-        iargs = [custom_temp_files[0]]
-        ut.print_command_line(script_name, iargs)
-        try:
-            prep_module.main(iargs)
-        except:
-            warnings.warn('prep_gmtsar.py failed. Assuming its result exists and continue...')
-
-    return
 
 
 def get_extra_metadata(iDict):
@@ -803,14 +661,12 @@ def get_extra_metadata(iDict):
 #################################################################
 def load_data(inps):
     """load data into HDF5 files."""
-
-    ## 0. read input
     start_time = time.time()
     iDict = read_inps2dict(inps)
+    extraDict = get_extra_metadata(iDict)
 
     ## 1. prepare metadata
     prepare_metadata(iDict)
-    extraDict = get_extra_metadata(iDict)
 
     # skip data writing as it is included in prep_aria/nisar
     if iDict['processor'] in ['aria', 'nisar']:
@@ -836,7 +692,6 @@ def load_data(inps):
     geom_geo_obj, geom_radar_obj = read_inps_dict2geometry_dict_object(iDict, geom_dset_name2template_key)
     geom_geo_file = os.path.abspath('./inputs/geometryGeo.h5')
     geom_radar_file = os.path.abspath('./inputs/geometryRadar.h5')
-
     if run_or_skip(geom_geo_file, geom_geo_obj, iDict['box4geo'], **kwargs) == 'run':
         geom_geo_obj.write2hdf5(
             outputFile=geom_geo_file,
@@ -844,7 +699,8 @@ def load_data(inps):
             box=iDict['box4geo'],
             xstep=iDict['xstep'],
             ystep=iDict['ystep'],
-            compression='lzf')
+            compression='lzf',
+            extra_metadata=extraDict)
 
     if run_or_skip(geom_radar_file, geom_radar_obj, iDict['box'], **kwargs) == 'run':
         geom_radar_obj.write2hdf5(
@@ -866,15 +722,12 @@ def load_data(inps):
     stack_files = ['ifgramStack.h5', 'ionStack.h5', 'offsetStack.h5']
     stack_files = [os.path.abspath(os.path.join('./inputs', x)) for x in stack_files]
     for ds_name2tmpl_opt, stack_file in zip(stack_ds_name2tmpl_key_list, stack_files):
-
         # initiate dict objects
         stack_obj = read_inps_dict2ifgram_stack_dict_object(iDict, ds_name2tmpl_opt)
-
         # use geom_obj as size reference while loading ionosphere
         geom_obj = None
         if os.path.basename(stack_file).startswith('ion'):
             geom_obj = geom_geo_obj if iDict['geocoded'] else geom_radar_obj
-
         # write dict objects to HDF5 files
         if run_or_skip(stack_file, stack_obj, iDict['box'], geom_obj=geom_obj, **kwargs) == 'run':
             stack_obj.write2hdf5(
