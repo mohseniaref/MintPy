@@ -15,6 +15,61 @@ import h5py
 import numpy as np
 from scipy import linalg  # more effieint than numpy.linalg
 
+# optional dependency for JIT acceleration
+try:
+    from numba import njit, prange
+    NUMBA_AVAILABLE = True
+except Exception:  # pragma: no cover - numba is optional
+    NUMBA_AVAILABLE = False
+
+if NUMBA_AVAILABLE:
+
+    @njit(parallel=True)
+    def _calc_inv_quality_tc_numba(G, X, y):
+        num_pair, num_pixel = y.shape
+        num_date = G.shape[1]
+        out = np.zeros(num_pixel, np.float32)
+        for j in prange(num_pixel):
+            real_s = 0.0
+            imag_s = 0.0
+            for i in range(num_pair):
+                dot = 0.0
+                for k in range(num_date):
+                    dot += G[i, k] * X[k, j]
+                e = y[i, j] - dot
+                val = np.exp(1j * e)
+                real_s += val.real
+                imag_s += val.imag
+            out[j] = np.sqrt(real_s ** 2 + imag_s ** 2) / num_pair
+        return out
+
+    @njit(parallel=True)
+    def _calc_inv_quality_residual_numba(G, X, y, e2, weighted):
+        num_pair, num_pixel = y.shape
+        num_date = G.shape[1]
+        out = np.zeros(num_pixel, np.float32)
+        if weighted:
+            for j in prange(num_pixel):
+                sum_e2 = 0.0
+                for i in range(num_pair):
+                    dot = 0.0
+                    for k in range(num_date):
+                        dot += G[i, k] * X[k, j]
+                    e = y[i, j] - dot
+                    sum_e2 += (e.real * e.real + e.imag * e.imag)
+                out[j] = np.sqrt(sum_e2)
+        else:
+            for j in prange(num_pixel):
+                out[j] = np.sqrt(e2[j]) if e2.size > 0 else np.nan
+        return out
+else:  # pragma: no cover - numba not installed
+
+    def _calc_inv_quality_tc_numba(*args, **kwargs):
+        raise ImportError('numba is required for numba acceleration.')
+
+    def _calc_inv_quality_residual_numba(*args, **kwargs):
+        raise ImportError('numba is required for numba acceleration.')
+
 from mintpy.objects import cluster, ifgramStack
 from mintpy.simulation import decorrelation as decor
 from mintpy.utils import ptime, readfile, utils as ut, writefile
@@ -90,7 +145,7 @@ def run_or_skip(inps):
 ################################# Time-series Estimator ###################################
 def estimate_timeseries(A, B, y, tbase_diff, weight_sqrt=None, min_norm_velocity=True,
                         rcond=1e-5, min_redundancy=1., inv_quality_name='temporalCoherence',
-                        print_msg=True, use_gpu=False):
+                        print_msg=True, use_gpu=False, use_numba=False):
     """Estimate time-series from a stack/network of interferograms with
     Least Square minimization on deformation phase / velocity.
 
@@ -136,6 +191,7 @@ def estimate_timeseries(A, B, y, tbase_diff, weight_sqrt=None, min_norm_velocity
                                     residual          for offset
                                     no to turn OFF the calculation
                 use_gpu          - bool, use cupy for GPU acceleration if available
+                use_numba        - bool, use numba for CPU JIT acceleration
     Returns:    ts                - 2D np.ndarray in size of (num_date, num_pixel), phase time-series
                 inv_quality       - 1D np.ndarray in size of (num_pixel), temporal coherence (for phase) or residual (for offset)
                 num_inv_obs       - 1D np.ndarray in size of (num_pixel), number of observations (ifgrams / offsets)
@@ -144,11 +200,15 @@ def estimate_timeseries(A, B, y, tbase_diff, weight_sqrt=None, min_norm_velocity
 
     xp = np
     linmod = linalg
+    if use_gpu and use_numba:
+        raise ValueError('use_gpu and use_numba cannot be both True')
     if use_gpu:
         try:
             import cupy as cp
             xp = cp
             linmod = cp.linalg
+    elif use_numba and not NUMBA_AVAILABLE:
+        raise ImportError('numba is required for numba acceleration.')
         except (ImportError, ModuleNotFoundError) as exc:
             raise ImportError('cupy is required for GPU acceleration.') from exc
 
@@ -204,7 +264,8 @@ def estimate_timeseries(A, B, y, tbase_diff, weight_sqrt=None, min_norm_velocity
                                                inv_quality_name=inv_quality_name,
                                                weight_sqrt=weight_sqrt,
                                                print_msg=print_msg,
-                                               use_gpu=use_gpu)
+                                               use_gpu=use_gpu,
+                                               use_numba=use_numba)
 
             # assemble time-series
             ts_diff = X * xp.tile(tbase_diff, (1, num_pixel))
@@ -225,7 +286,8 @@ def estimate_timeseries(A, B, y, tbase_diff, weight_sqrt=None, min_norm_velocity
                                                inv_quality_name=inv_quality_name,
                                                weight_sqrt=weight_sqrt,
                                                print_msg=print_msg,
-                                               use_gpu=use_gpu)
+                                               use_gpu=use_gpu,
+                                               use_numba=use_numba)
 
             # assemble time-series
             ts[1:, :] = X
@@ -305,7 +367,9 @@ def skip_invalid_obs(obs, mat_list):
     return obs, mat_list
 
 
-def calc_inv_quality(G, X, y, e2, inv_quality_name='temporalCoherence', weight_sqrt=None, print_msg=True, use_gpu=False):
+def calc_inv_quality(G, X, y, e2, inv_quality_name='temporalCoherence',
+                     weight_sqrt=None, print_msg=True, use_gpu=False,
+                     use_numba=False):
     """Calculate the inversion quality of the time series estimation.
 
     Parameters: G                - 2D np.ndarray in size of (num_pair, num_date-1), design matrix A or B
@@ -318,6 +382,7 @@ def calc_inv_quality(G, X, y, e2, inv_quality_name='temporalCoherence', weight_s
                weight_sqrt      - 2D np.ndarray in size of (num_pair, num_pixel),
                                    weight square root, None for un-weighted estimation.
                use_gpu          - bool, use cupy for GPU acceleration if available
+               use_numba        - bool, use numba for CPU JIT acceleration
     Returns:    inv_quality      - 1D np.ndarray in size of (num_pixel), temporalCoherence / residual
     """
 
@@ -328,6 +393,8 @@ def calc_inv_quality(G, X, y, e2, inv_quality_name='temporalCoherence', weight_s
             xp = cp
         except Exception as exc:
             raise ImportError('cupy is required for GPU acceleration.') from exc
+    elif use_numba and not NUMBA_AVAILABLE:
+        raise ImportError('numba is required for numba acceleration.')
 
     G = xp.asarray(G)
     X = xp.asarray(X)
@@ -336,8 +403,26 @@ def calc_inv_quality(G, X, y, e2, inv_quality_name='temporalCoherence', weight_s
     if weight_sqrt is not None:
         weight_sqrt = xp.asarray(weight_sqrt)
 
+    if use_numba:
+        # ensure numpy arrays for numba
+        Gn = np.asarray(G)
+        Xn = np.asarray(X)
+        yn = np.asarray(y)
+        e2n = np.asarray(e2)
+        weight_sqrtn = np.asarray(weight_sqrt) if weight_sqrt is not None else None
+
     num_pair, num_pixel = y.shape
     inv_quality = xp.zeros(num_pixel, dtype=xp.float32)
+
+    if use_numba:
+        if inv_quality_name == 'temporalCoherence':
+            inv_quality = _calc_inv_quality_tc_numba(Gn, Xn, yn)
+        elif inv_quality_name == 'residual':
+            inv_quality = _calc_inv_quality_residual_numba(Gn, Xn, yn, e2n,
+                                                          weight_sqrtn is not None)
+        else:
+            raise ValueError(f'un-recognized inversion quality name: {inv_quality_name}')
+        return inv_quality
 
     # chunk_size as the number of pixels
     chunk_size = int(ut.round_to_1(2e5 / num_pair))
@@ -436,6 +521,42 @@ def benchmark_gpu_speedup(A, B, y, tbase_diff, weight_sqrt=None,
 
     speedup = cpu_time / gpu_time if gpu_time > 0 else np.nan
     print(f'CPU time: {cpu_time:.3f}s, GPU time: {gpu_time:.3f}s, speedup: {speedup:.2f}x')
+    return speedup
+
+
+def benchmark_numba_speedup(A, B, y, tbase_diff, weight_sqrt=None,
+                            min_norm_velocity=True, rcond=1e-5,
+                            min_redundancy=1., inv_quality_name='temporalCoherence'):
+    """Benchmark the speed difference between standard and numba-accelerated modes.
+
+    This function runs :func:`estimate_timeseries` twice: once without numba and
+    once using numba JIT acceleration. It reports the runtime of each run and
+    returns the speedup factor (``CPU_time / Numba_time``).  If Numba is not
+    installed an ``ImportError`` will be raised from ``estimate_timeseries``.
+    """
+
+    # CPU run
+    t0 = time.perf_counter()
+    estimate_timeseries(A, B, y, tbase_diff,
+                        weight_sqrt=weight_sqrt,
+                        min_norm_velocity=min_norm_velocity,
+                        rcond=rcond, min_redundancy=min_redundancy,
+                        inv_quality_name=inv_quality_name,
+                        print_msg=False, use_gpu=False, use_numba=False)
+    cpu_time = time.perf_counter() - t0
+
+    # numba run
+    t0 = time.perf_counter()
+    estimate_timeseries(A, B, y, tbase_diff,
+                        weight_sqrt=weight_sqrt,
+                        min_norm_velocity=min_norm_velocity,
+                        rcond=rcond, min_redundancy=min_redundancy,
+                        inv_quality_name=inv_quality_name,
+                        print_msg=False, use_gpu=False, use_numba=True)
+    nb_time = time.perf_counter() - t0
+
+    speedup = cpu_time / nb_time if nb_time > 0 else np.nan
+    print(f'CPU time: {cpu_time:.3f}s, Numba time: {nb_time:.3f}s, speedup: {speedup:.2f}x')
     return speedup
 
 
