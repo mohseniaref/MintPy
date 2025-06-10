@@ -90,7 +90,7 @@ def run_or_skip(inps):
 ################################# Time-series Estimator ###################################
 def estimate_timeseries(A, B, y, tbase_diff, weight_sqrt=None, min_norm_velocity=True,
                         rcond=1e-5, min_redundancy=1., inv_quality_name='temporalCoherence',
-                        print_msg=True):
+                        print_msg=True, use_gpu=False):
     """Estimate time-series from a stack/network of interferograms with
     Least Square minimization on deformation phase / velocity.
 
@@ -135,20 +135,34 @@ def estimate_timeseries(A, B, y, tbase_diff, weight_sqrt=None, min_norm_velocity
                                     temporalCoherence for phase
                                     residual          for offset
                                     no to turn OFF the calculation
+                use_gpu          - bool, use cupy for GPU acceleration if available
     Returns:    ts                - 2D np.ndarray in size of (num_date, num_pixel), phase time-series
                 inv_quality       - 1D np.ndarray in size of (num_pixel), temporal coherence (for phase) or residual (for offset)
                 num_inv_obs       - 1D np.ndarray in size of (num_pixel), number of observations (ifgrams / offsets)
                                     used during the inversion
     """
 
-    y = y.reshape(A.shape[0], -1)
+    xp = np
+    linmod = linalg
+    if use_gpu:
+        try:
+            import cupy as cp
+            xp = cp
+            linmod = cp.linalg
+        except Exception as exc:
+            raise ImportError('cupy is required for GPU acceleration.') from exc
+
+    y = xp.asarray(y).reshape(A.shape[0], -1)
     if weight_sqrt is not None:
-        weight_sqrt = weight_sqrt.reshape(A.shape[0], -1)
+        weight_sqrt = xp.asarray(weight_sqrt).reshape(A.shape[0], -1)
+    A = xp.asarray(A)
+    B = xp.asarray(B)
+    tbase_diff = xp.asarray(tbase_diff)
     num_date = A.shape[1] + 1
     num_pixel = y.shape[1]
 
     # initial output value
-    ts = np.zeros((num_date, num_pixel), dtype=np.float32)
+    ts = xp.zeros((num_date, num_pixel), dtype=xp.float32)
     if inv_quality_name == 'residual':
         inv_quality = np.nan
     else:
@@ -178,47 +192,54 @@ def estimate_timeseries(A, B, y, tbase_diff, weight_sqrt=None, min_norm_velocity
         if min_norm_velocity:
             ##### min-norm velocity
             if weight_sqrt is not None:
-                X, e2 = linalg.lstsq(np.multiply(B, weight_sqrt),
-                                     np.multiply(y, weight_sqrt),
-                                     cond=rcond)[:2]
+                X, e2 = linmod.lstsq(xp.multiply(B, weight_sqrt),
+                                     xp.multiply(y, weight_sqrt),
+                                     rcond=rcond)[:2]
             else:
-                X, e2 = linalg.lstsq(B, y, cond=rcond)[:2]
+                X, e2 = linmod.lstsq(B, y, rcond=rcond)[:2]
 
             # calc inversion quality
             if inv_quality_name != 'no':
                 inv_quality = calc_inv_quality(B, X, y, e2,
                                                inv_quality_name=inv_quality_name,
                                                weight_sqrt=weight_sqrt,
-                                               print_msg=print_msg)
+                                               print_msg=print_msg,
+                                               use_gpu=use_gpu)
 
             # assemble time-series
-            ts_diff = X * np.tile(tbase_diff, (1, num_pixel))
-            ts[1:, :] = np.cumsum(ts_diff, axis=0)
+            ts_diff = X * xp.tile(tbase_diff, (1, num_pixel))
+            ts[1:, :] = xp.cumsum(ts_diff, axis=0)
 
         else:
             ##### min-norm displacement
             if weight_sqrt is not None:
-                X, e2 = linalg.lstsq(np.multiply(A, weight_sqrt),
-                                     np.multiply(y, weight_sqrt),
-                                     cond=rcond)[:2]
+                X, e2 = linmod.lstsq(xp.multiply(A, weight_sqrt),
+                                     xp.multiply(y, weight_sqrt),
+                                     rcond=rcond)[:2]
             else:
-                X, e2 = linalg.lstsq(A, y, cond=rcond)[:2]
+                X, e2 = linmod.lstsq(A, y, rcond=rcond)[:2]
 
             # calc inversion quality
             if inv_quality_name != 'no':
                 inv_quality = calc_inv_quality(A, X, y, e2,
                                                inv_quality_name=inv_quality_name,
                                                weight_sqrt=weight_sqrt,
-                                               print_msg=print_msg)
+                                               print_msg=print_msg,
+                                               use_gpu=use_gpu)
 
             # assemble time-series
-            ts[1: ,:] = X
+            ts[1:, :] = X
 
     except linalg.LinAlgError:
         pass
 
     # number of observations used for inversion
     num_inv_obs = A.shape[0]
+
+    if use_gpu:
+        ts = xp.asnumpy(ts)
+        if isinstance(inv_quality, xp.ndarray):
+            inv_quality = xp.asnumpy(inv_quality)
 
     return ts, inv_quality, num_inv_obs
 
@@ -284,7 +305,7 @@ def skip_invalid_obs(obs, mat_list):
     return obs, mat_list
 
 
-def calc_inv_quality(G, X, y, e2, inv_quality_name='temporalCoherence', weight_sqrt=None, print_msg=True):
+def calc_inv_quality(G, X, y, e2, inv_quality_name='temporalCoherence', weight_sqrt=None, print_msg=True, use_gpu=False):
     """Calculate the inversion quality of the time series estimation.
 
     Parameters: G                - 2D np.ndarray in size of (num_pair, num_date-1), design matrix A or B
@@ -294,13 +315,29 @@ def calc_inv_quality(G, X, y, e2, inv_quality_name='temporalCoherence', weight_s
                 inv_quality_name - str, name of the inversion quality parameter
                                    temporalCoherence for phase
                                    residual          for offset
-                weight_sqrt      - 2D np.ndarray in size of (num_pair, num_pixel),
+               weight_sqrt      - 2D np.ndarray in size of (num_pair, num_pixel),
                                    weight square root, None for un-weighted estimation.
+               use_gpu          - bool, use cupy for GPU acceleration if available
     Returns:    inv_quality      - 1D np.ndarray in size of (num_pixel), temporalCoherence / residual
     """
 
+    xp = np
+    if use_gpu:
+        try:
+            import cupy as cp
+            xp = cp
+        except Exception as exc:
+            raise ImportError('cupy is required for GPU acceleration.') from exc
+
+    G = xp.asarray(G)
+    X = xp.asarray(X)
+    y = xp.asarray(y)
+    e2 = xp.asarray(e2)
+    if weight_sqrt is not None:
+        weight_sqrt = xp.asarray(weight_sqrt)
+
     num_pair, num_pixel = y.shape
-    inv_quality = np.zeros(num_pixel, dtype=np.float32)
+    inv_quality = xp.zeros(num_pixel, dtype=xp.float32)
 
     # chunk_size as the number of pixels
     chunk_size = int(ut.round_to_1(2e5 / num_pair))
@@ -317,19 +354,19 @@ def calc_inv_quality(G, X, y, e2, inv_quality_name='temporalCoherence', weight_s
 
             if inv_quality_name == 'temporalCoherence':
                 #for phase
-                e = y[:, c0:c1] - np.dot(G, X[:, c0:c1])
-                inv_quality[c0:c1] = np.abs(np.sum(np.exp(1j*e), axis=0)) / num_pair
+                e = y[:, c0:c1] - xp.dot(G, X[:, c0:c1])
+                inv_quality[c0:c1] = xp.abs(xp.sum(xp.exp(1j*e), axis=0)) / num_pair
 
             elif inv_quality_name == 'residual':
                 #for offset
                 if weight_sqrt is not None:
                     # calculate the un-weighted residual for the weighted inversion
-                    e = y[:, c0:c1] - np.dot(G, X[:, c0:c1])
-                    inv_quality[c0:c1] = np.sqrt(np.sum(np.abs(e) ** 2, axis=0))
+                    e = y[:, c0:c1] - xp.dot(G, X[:, c0:c1])
+                    inv_quality[c0:c1] = xp.sqrt(xp.sum(xp.abs(e) ** 2, axis=0))
 
                 else:
                     # use the un-weighted residual directly
-                    inv_quality[c0:c1] = np.sqrt(e2[c0:c1]) if e2[c0:c1].size > 0 else np.nan
+                    inv_quality[c0:c1] = xp.sqrt(e2[c0:c1]) if e2[c0:c1].size > 0 else xp.nan
 
             # print out message
             chunk_step = max(1, int(ut.round_to_1(num_chunk / 5)))
@@ -339,23 +376,25 @@ def calc_inv_quality(G, X, y, e2, inv_quality_name='temporalCoherence', weight_s
     else:
         if inv_quality_name == 'temporalCoherence':
             #for phase
-            e = y - np.dot(G, X)
-            inv_quality = np.abs(np.sum(np.exp(1j*e), axis=0)) / num_pair
+            e = y - xp.dot(G, X)
+            inv_quality = xp.abs(xp.sum(xp.exp(1j*e), axis=0)) / num_pair
 
         elif inv_quality_name == 'residual':
             #for offset
             if weight_sqrt is not None:
                 # calculate the un-weighted residual for the weighted inversion
-                e = y - G.dot(X)
-                inv_quality = np.sqrt(np.sum(np.abs(e) ** 2, axis=0))
+                e = y - xp.dot(G, X)
+                inv_quality = xp.sqrt(xp.sum(xp.abs(e) ** 2, axis=0))
 
             else:
                 # use the un-weighted residual directly
-                inv_quality = np.sqrt(e2) if e2.size > 0 else np.nan
+                inv_quality = xp.sqrt(e2) if e2.size > 0 else xp.nan
 
         else:
             raise ValueError(f'un-recognized inversion quality name: {inv_quality_name}')
 
+    if use_gpu:
+        inv_quality = xp.asnumpy(inv_quality)
     return inv_quality
 
 
