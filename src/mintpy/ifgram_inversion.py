@@ -149,7 +149,7 @@ def estimate_timeseries(A, B, y, tbase_diff, weight_sqrt=None, min_norm_velocity
             import cupy as cp
             xp = cp
             linmod = cp.linalg
-        except Exception as exc:
+        except (ImportError, ModuleNotFoundError) as exc:
             raise ImportError('cupy is required for GPU acceleration.') from exc
 
     y = xp.asarray(y).reshape(A.shape[0], -1)
