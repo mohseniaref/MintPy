@@ -398,6 +398,47 @@ def calc_inv_quality(G, X, y, e2, inv_quality_name='temporalCoherence', weight_s
     return inv_quality
 
 
+def benchmark_gpu_speedup(A, B, y, tbase_diff, weight_sqrt=None,
+                          min_norm_velocity=True, rcond=1e-5,
+                          min_redundancy=1., inv_quality_name='temporalCoherence'):
+    """Benchmark the speed difference between CPU and GPU modes.
+
+    This function runs :func:`estimate_timeseries` twice: once on CPU and once
+    on GPU (using CuPy).  It reports the runtime of each run and returns the
+    speedup factor (``CPU_time / GPU_time``).  If CuPy is not installed an
+    ``ImportError`` will be raised from ``estimate_timeseries``.
+
+    Returns
+    -------
+    float
+        Speedup factor comparing CPU and GPU execution time.
+    """
+
+    # CPU run
+    t0 = time.perf_counter()
+    estimate_timeseries(A, B, y, tbase_diff,
+                        weight_sqrt=weight_sqrt,
+                        min_norm_velocity=min_norm_velocity,
+                        rcond=rcond, min_redundancy=min_redundancy,
+                        inv_quality_name=inv_quality_name,
+                        print_msg=False, use_gpu=False)
+    cpu_time = time.perf_counter() - t0
+
+    # GPU run
+    t0 = time.perf_counter()
+    estimate_timeseries(A, B, y, tbase_diff,
+                        weight_sqrt=weight_sqrt,
+                        min_norm_velocity=min_norm_velocity,
+                        rcond=rcond, min_redundancy=min_redundancy,
+                        inv_quality_name=inv_quality_name,
+                        print_msg=False, use_gpu=True)
+    gpu_time = time.perf_counter() - t0
+
+    speedup = cpu_time / gpu_time if gpu_time > 0 else np.nan
+    print(f'CPU time: {cpu_time:.3f}s, GPU time: {gpu_time:.3f}s, speedup: {speedup:.2f}x')
+    return speedup
+
+
 
 ###################################### File IO ############################################
 def check_design_matrix(ifgram_file, weight_func='var'):
