@@ -614,19 +614,7 @@ def prepare_metadata(iDict):
     # Import prep_{processor}
     prep_module = importlib.import_module(f'mintpy.cli.prep_{processor}')
 
-    if processor == 'licsar':
-        # Validate required files
-        metadata_file = os.path.join(os.path.dirname(iDict['mintpy.load.unwFile']), 'metadata.txt')
-        baseline_file = os.path.join(os.path.dirname(iDict['mintpy.load.unwFile']), 'baselines.txt')
-        if not os.path.exists(metadata_file) or not os.path.exists(baseline_file):
-            raise FileNotFoundError(f"Required LiCSAR files not found: {metadata_file}, {baseline_file}")
-
-        # Run prep_licsar
-        iargs = [iDict['mintpy.load.unwFile'], metadata_file, baseline_file]
-        ut.print_command_line(script_name, iargs)
-        prep_module.main(iargs)
-
-    elif processor in ['gamma', 'hyp3', 'roipac', 'snap', 'cosicorr']:
+    if processor in ['gamma', 'hyp3', 'roipac', 'snap', 'cosicorr', 'licsar']:
         # Run prep_module
         for key in [i for i in iDict.keys()
                     if (i.startswith('mintpy.load.')
