@@ -386,58 +386,20 @@ def run_timeseries2time_func(inps):
                 # calc the common pseudo-inverse matrix
                 Gplus = linalg.pinv(G)
 
-                # VECTORIZED covariance calculation - MASSIVE speedup!
-                # Replace pixel-by-pixel loop with vectorized matrix operations
-                print('estimating time functions STD via VECTORIZED covariance propagation ...')
-                
-                if covar_flag:
-                    # Full covariance matrix case - vectorized for all pixels at once
-                    print(f'Processing {num_pixel2inv:,} pixels with full covariance matrices...')
-                    
-                    # Extract valid pixels from covariance tensor
-                    ts_cov_valid = ts_cov[:, :, idx_pixel2inv]  # Shape: (num_date, num_date, num_pixel2inv)
-                    
-                    # VECTORIZED computation: Gplus @ ts_cov @ Gplus.T for ALL pixels simultaneously
-                    # Using einsum for efficient tensor operations
-                    print('Computing vectorized covariance propagation...')
-                    
-                    # Method 1: Full vectorization using einsum (memory efficient for large datasets)
-                    # m_cov_all = np.einsum('ij,jkl,km->iml', Gplus, ts_cov_valid, Gplus.T)
-                    
-                    # Method 2: Batch matrix multiplication (faster for moderate datasets)
-                    # Reshape for batch processing: (num_pixel2inv, num_date, num_date)
-                    ts_cov_batch = ts_cov_valid.transpose(2, 0, 1)
-                    
-                    # Vectorized batch matrix multiplication
-                    temp = np.matmul(Gplus[np.newaxis, :, :], ts_cov_batch)  # (num_pixel2inv, num_param, num_date)
-                    m_cov_batch = np.matmul(temp, Gplus.T[np.newaxis, :, :])  # (num_pixel2inv, num_param, num_param)
-                    
-                    # Extract diagonal elements (variances) for all pixels at once
-                    m_var_valid = np.array([np.diag(m_cov_batch[i]) for i in range(num_pixel2inv)])  # (num_pixel2inv, num_param)
-                    m_std[:, idx_pixel2inv] = np.sqrt(m_var_valid.T)  # Transpose to (num_param, num_pixel2inv)
-                    
-                else:
-                    # Diagonal variance matrix case - even more efficient vectorization
-                    print(f'Processing {num_pixel2inv:,} pixels with diagonal variance matrices...')
-                    
-                    # Extract valid pixels from variance data
-                    ts_var_valid = ts_cov[:, idx_pixel2inv]  # Shape: (num_date, num_pixel2inv)
-                    
-                    # Create diagonal covariance matrices for all pixels at once
-                    # More memory efficient than creating full matrices
-                    ts_cov_diag = np.zeros((num_pixel2inv, num_date, num_date), dtype=ts_cov.dtype)
-                    for i in range(num_pixel2inv):
-                        np.fill_diagonal(ts_cov_diag[i], ts_var_valid[:, i])
-                    
-                    # Vectorized batch computation
-                    temp = np.matmul(Gplus[np.newaxis, :, :], ts_cov_diag)
-                    m_cov_batch = np.matmul(temp, Gplus.T[np.newaxis, :, :])
-                    
-                    # Extract variances
-                    m_var_valid = np.array([np.diag(m_cov_batch[i]) for i in range(num_pixel2inv)])
-                    m_std[:, idx_pixel2inv] = np.sqrt(m_var_valid.T)
-                
-                print('✅ VECTORIZED covariance calculation completed!')
+                # loop over each pixel
+                # or use multidimension matrix multiplication
+                # m_cov = Gplus @ ts_cov @ Gplus.T
+                prog_bar = ptime.progressBar(maxValue=num_pixel2inv)
+                for i in range(num_pixel2inv):
+                    idx = idx_pixel2inv[i]
+
+                    # cov: time-series -> time func
+                    ts_covi = ts_cov[:, :, idx] if covar_flag else np.diag(ts_cov[:, idx])
+                    m_cov = np.linalg.multi_dot([Gplus, ts_covi, Gplus.T])
+                    m_std[:, idx] = np.sqrt(np.diag(m_cov))
+
+                    prog_bar.update(i+1, every=200, suffix=f'{i+1}/{num_pixel2inv} pixels')
+                prog_bar.close()
 
             elif inps.uncertaintyQuantification == 'residue':
                 # option 2.3 - assume obs errors following normal dist. in time
