@@ -91,22 +91,14 @@ def run_or_skip(inps):
 def estimate_timeseries(A, B, y, tbase_diff, weight_sqrt=None, min_norm_velocity=True,
                         rcond=1e-5, min_redundancy=1., inv_quality_name='temporalCoherence',
                         print_msg=True):
-    """VECTORIZED time-series estimation from interferogram stack with massive speedup.
-    
-    This optimized implementation achieves 100-1000x speedup over pixel-by-pixel processing
-    by using advanced vectorization techniques. Processes ALL pixels simultaneously rather
-    than looping through individual pixels.
+    """Estimate time-series from a stack/network of interferograms with
+    Least Square minimization on deformation phase / velocity.
 
     Problem: A X = y
     opt 1: X = np.dot(np.dot(numpy.linalg.inv(np.dot(A.T, A)), A.T), y)
     opt 2: X = np.dot(numpy.linalg.pinv(A), y)
     opt 3: X = np.dot(scipy.linalg.pinv(A), y)
     opt 4: X = scipy.linalg.lstsq(A, y)[0] [recommend and used]
-    opt 5: VECTORIZED scipy.linalg.lstsq(A, y_all_pixels) [NEW - ultra-fast]
-
-    opt 5 is the fastest because it processes all pixels in a single call to scipy.linalg.lstsq
-    instead of looping through pixels. This leverages optimized BLAS/LAPACK routines for
-    maximum performance.
 
     opt 4 supports weight.
     scipy.linalg provides more advanced and slighted faster performance than numpy.linalg.
@@ -149,132 +141,84 @@ def estimate_timeseries(A, B, y, tbase_diff, weight_sqrt=None, min_norm_velocity
                                     used during the inversion
     """
 
-    # Reshape inputs for vectorized processing
     y = y.reshape(A.shape[0], -1)
     if weight_sqrt is not None:
         weight_sqrt = weight_sqrt.reshape(A.shape[0], -1)
-    
     num_date = A.shape[1] + 1
     num_pixel = y.shape[1]
 
-    # Initialize outputs with proper shapes for vectorized processing
+    # initial output value
     ts = np.zeros((num_date, num_pixel), dtype=np.float32)
-    
     if inv_quality_name == 'residual':
-        inv_quality = np.full(num_pixel, np.nan, dtype=np.float32)
+        inv_quality = np.nan
     else:
-        inv_quality = np.zeros(num_pixel, dtype=np.float32)
-    
-    num_inv_obs = np.zeros(num_pixel, dtype=np.int16)
+        inv_quality = 0.
+    num_inv_obs = 0
 
-    if num_pixel == 0:
+    ##### skip invalid phase/offset value [NaN]
+    y, [A, B, weight_sqrt] = skip_invalid_obs(y, mat_list=[A, B, weight_sqrt])
+
+    # check 1 - network redundancy: skip inversion if < threshold
+    if np.min(np.sum(A != 0., axis=0)) < min_redundancy:
         return ts, inv_quality, num_inv_obs
 
-    # VECTORIZED NaN HANDLING - Process valid pixels efficiently
-    # Find pixels with completely valid data (no NaN in ANY interferogram)
-    valid_pixel_mask = ~np.any(np.isnan(y), axis=0)
-    n_valid_pixels = np.sum(valid_pixel_mask)
-    
-    if print_msg and n_valid_pixels < num_pixel:
-        print(f"VECTORIZED processing {n_valid_pixels:,} valid pixels out of {num_pixel:,} total")
-    
-    if n_valid_pixels == 0:
-        return ts, inv_quality, num_inv_obs
+    # check 2 - matrix invertability (for WLS only because OLS contains it already)
+    # Yunjun, Mar 2022: from my vague memory, a singular design matrix B returns error from scipy.linalg,
+    #     but somehow gives results after weighting, so I decided to not trust that result via this check
+    # Sara, Mar 2022: comment this check after correcting design matrix B for non-sequential networks
+    #     a.k.a., networks with the first date not being the earlier date
+    #if weight_sqrt is not None:
+    #    try:
+    #        linalg.inv(np.dot(B.T, B))
+    #    except linalg.LinAlgError:
+    #        return ts, inv_quality, num_inv_obs
 
-    # Extract valid pixel data for vectorized processing
-    y_valid = y[:, valid_pixel_mask]
-    
-    # Check network redundancy on design matrix (vectorized)
-    redundancy = np.min(np.sum(A != 0., axis=0))
-    if redundancy < min_redundancy:
-        if print_msg:
-            print(f"Insufficient network redundancy: {redundancy} < {min_redundancy}")
-        return ts, inv_quality, num_inv_obs
-
-    # ULTRA-FAST VECTORIZED INVERSION - key optimization!
+    ##### invert time-series
     try:
         if min_norm_velocity:
-            ##### VECTORIZED min-norm velocity approach
+            ##### min-norm velocity
             if weight_sqrt is not None:
-                weight_valid = weight_sqrt[:, valid_pixel_mask]
-                
-                # Apply weights - vectorized multiplication across ALL pixels
-                B_weighted = np.multiply(B, weight_valid)
-                y_weighted = np.multiply(y_valid, weight_valid)
-                
-                # SINGLE vectorized least squares call for ALL valid pixels
-                try:
-                    X, residues, rank, s = linalg.lstsq(B_weighted, y_weighted, cond=rcond)[:4]
-                except TypeError:
-                    # Older scipy version compatibility
-                    X, residues, rank, s = linalg.lstsq(B_weighted, y_weighted)[:4]
+                X, e2 = linalg.lstsq(np.multiply(B, weight_sqrt),
+                                     np.multiply(y, weight_sqrt),
+                                     cond=rcond)[:2]
             else:
-                # Unweighted VECTORIZED least squares for ALL pixels at once
-                try:
-                    X, residues, rank, s = linalg.lstsq(B, y_valid, cond=rcond)[:4]
-                except TypeError:
-                    # Older scipy version compatibility
-                    X, residues, rank, s = linalg.lstsq(B, y_valid)[:4]
+                X, e2 = linalg.lstsq(B, y, cond=rcond)[:2]
 
-            # VECTORIZED time-series assembly
-            # Broadcast tbase_diff to all pixels simultaneously
-            ts_diff = X * np.tile(tbase_diff, (1, n_valid_pixels))
-            ts_valid = np.zeros((num_date, n_valid_pixels), dtype=np.float32)
-            ts_valid[1:, :] = np.cumsum(ts_diff, axis=0)
+            # calc inversion quality
+            if inv_quality_name != 'no':
+                inv_quality = calc_inv_quality(B, X, y, e2,
+                                               inv_quality_name=inv_quality_name,
+                                               weight_sqrt=weight_sqrt,
+                                               print_msg=print_msg)
+
+            # assemble time-series
+            ts_diff = X * np.tile(tbase_diff, (1, num_pixel))
+            ts[1:, :] = np.cumsum(ts_diff, axis=0)
 
         else:
-            ##### VECTORIZED min-norm displacement approach
+            ##### min-norm displacement
             if weight_sqrt is not None:
-                weight_valid = weight_sqrt[:, valid_pixel_mask]
-                
-                # Apply weights - vectorized multiplication
-                A_weighted = np.multiply(A, weight_valid)
-                y_weighted = np.multiply(y_valid, weight_valid)
-                
-                try:
-                    X, residues, rank, s = linalg.lstsq(A_weighted, y_weighted, cond=rcond)[:4]
-                except TypeError:
-                    X, residues, rank, s = linalg.lstsq(A_weighted, y_weighted)[:4]
+                X, e2 = linalg.lstsq(np.multiply(A, weight_sqrt),
+                                     np.multiply(y, weight_sqrt),
+                                     cond=rcond)[:2]
             else:
-                try:
-                    X, residues, rank, s = linalg.lstsq(A, y_valid, cond=rcond)[:4]
-                except TypeError:
-                    X, residues, rank, s = linalg.lstsq(A, y_valid)[:4]
+                X, e2 = linalg.lstsq(A, y, cond=rcond)[:2]
 
-            # VECTORIZED time-series assembly
-            ts_valid = np.zeros((num_date, n_valid_pixels), dtype=np.float32)
-            ts_valid[1:, :] = X
+            # calc inversion quality
+            if inv_quality_name != 'no':
+                inv_quality = calc_inv_quality(A, X, y, e2,
+                                               inv_quality_name=inv_quality_name,
+                                               weight_sqrt=weight_sqrt,
+                                               print_msg=print_msg)
 
-        # Assign vectorized results back to full array
-        ts[:, valid_pixel_mask] = ts_valid
-        
-        # VECTORIZED quality calculation
-        if inv_quality_name != 'no' and n_valid_pixels > 0:
-            # Use the same design matrix as inversion
-            G_matrix = B if min_norm_velocity else A
-            
-            if inv_quality_name == 'temporalCoherence':
-                # VECTORIZED temporal coherence calculation
-                residual = y_valid - G_matrix @ X
-                coherence = np.abs(np.sum(np.exp(1j * residual), axis=0)) / G_matrix.shape[0]
-                inv_quality[valid_pixel_mask] = coherence.astype(np.float32)
-                
-            elif inv_quality_name == 'residual' and residues is not None:
-                # VECTORIZED residual calculation
-                if hasattr(residues, '__len__') and len(residues) == n_valid_pixels:
-                    inv_quality[valid_pixel_mask] = np.sqrt(residues).astype(np.float32)
+            # assemble time-series
+            ts[1: ,:] = X
 
-        # Set number of observations (vectorized)
-        num_inv_obs[valid_pixel_mask] = A.shape[0]
-
-    except linalg.LinAlgError as e:
-        if print_msg:
-            print(f"Linear algebra error in VECTORIZED inversion: {e}")
+    except linalg.LinAlgError:
         pass
-    except Exception as e:
-        if print_msg:
-            print(f"Error in VECTORIZED processing: {e}")
-        pass
+
+    # number of observations used for inversion
+    num_inv_obs = A.shape[0]
 
     return ts, inv_quality, num_inv_obs
 
