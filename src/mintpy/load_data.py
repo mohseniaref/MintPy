@@ -441,18 +441,21 @@ def read_inps_dict2ifgram_stack_dict_object(iDict, ds_name2template_key):
 
 ################################################################
 def enhance_licsar_geometry_file(geom_file):
-    """Calculate and add incidence/azimuth angles from E,N,U components for LiCSAR geometry.
+    """Calculate and add incidence/azimuth angles and lat/lon grids from E,N,U components for LiCSAR geometry.
     
     This function reads the E, N, U basis vector components from the geometry file
     and calculates:
     - incidenceAngle: from E,N,U using utils0.incidence_angle_from_enu()
     - azimuthAngle: from E,N using utils0.azimuth_angle_from_enu()
     - slantRangeDistance: from incidenceAngle using utils0.incidence_angle2slant_range_distance()
+    - latitude: 2D grid from Y_FIRST and Y_STEP metadata
+    - longitude: 2D grid from X_FIRST and X_STEP metadata
     
     Parameters: geom_file - str, path to the geometry HDF5 file
     Returns:    None (modifies the file in place)
     """
     import h5py
+    import numpy as np
     from mintpy.utils import utils0
     
     print(f'Enhancing LiCSAR geometry file: {geom_file}')
@@ -485,11 +488,33 @@ def enhance_licsar_geometry_file(geom_file):
         atr['HEIGHT'] = 693000  # in meters
     slant_range = utils0.incidence_angle2slant_range_distance(atr, inc_angle)
     
+    # Generate latitude and longitude grids from metadata
+    print('Generating latitude and longitude grids...')
+    length = int(atr.get('LENGTH', e_data.shape[0]))
+    width = int(atr.get('WIDTH', e_data.shape[1]))
+    
+    # Get geographic coordinates from metadata
+    y_first = float(atr.get('Y_FIRST', 0))
+    y_step = float(atr.get('Y_STEP', 0))
+    x_first = float(atr.get('X_FIRST', 0))
+    x_step = float(atr.get('X_STEP', 0))
+    
+    # Create 1D arrays for lat/lon
+    lat_1d = y_first + np.arange(length) * y_step
+    lon_1d = x_first + np.arange(width) * x_step
+    
+    # Create 2D grids
+    lon_2d, lat_2d = np.meshgrid(lon_1d, lat_1d)
+    
+    # Convert to float32 to save space
+    lat_2d = lat_2d.astype(np.float32)
+    lon_2d = lon_2d.astype(np.float32)
+    
     # Write the calculated datasets back to the file
     print('Adding calculated datasets to geometry file...')
     with h5py.File(geom_file, 'a') as f:
         # Remove existing datasets if they exist
-        for dname in ['incidenceAngle', 'azimuthAngle', 'slantRangeDistance']:
+        for dname in ['incidenceAngle', 'azimuthAngle', 'slantRangeDistance', 'latitude', 'longitude']:
             if dname in f.keys():
                 del f[dname]
         
@@ -497,8 +522,10 @@ def enhance_licsar_geometry_file(geom_file):
         f.create_dataset('incidenceAngle', data=inc_angle, compression='lzf')
         f.create_dataset('azimuthAngle', data=az_angle, compression='lzf')
         f.create_dataset('slantRangeDistance', data=slant_range, compression='lzf')
+        f.create_dataset('latitude', data=lat_2d, compression='lzf')
+        f.create_dataset('longitude', data=lon_2d, compression='lzf')
     
-    print('Enhanced LiCSAR geometry file with incidence/azimuth angles and slant range distance')
+    print('Enhanced LiCSAR geometry file with incidence/azimuth angles, slant range distance, and lat/lon grids')
 
 
 ################################################################
