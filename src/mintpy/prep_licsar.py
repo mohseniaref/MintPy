@@ -39,15 +39,19 @@ def _parse_date(date_str):
     return None
 
 
-def _extract_slave_date_from_fname(fname, master_date):
-    """Infer the slave date from the file name when it is not present in metadata."""
-
+def _extract_dates_from_fname(fname):
+    """Extract both master and slave dates from interferogram filename.
+    
+    LiCSAR interferogram filenames follow the pattern: YYYYMMDD_YYYYMMDD.geo.unw.tif
+    where the first date is the master and the second is the slave.
+    """
     name = os.path.basename(fname)
-    for match in re.findall(r'\d{6,8}', name):
-        candidate = _parse_date(match)
-        if candidate and candidate != master_date:
-            return candidate
-    return None
+    dates = re.findall(r'\d{8}', name)
+    if len(dates) >= 2:
+        master = _parse_date(dates[0])
+        slave = _parse_date(dates[1])
+        return master, slave
+    return None, None
 
 
 def _read_key_value_file(meta_file, separators=('=', ':')):
@@ -96,17 +100,28 @@ def add_licsar_metadata(fname, meta, is_ifg=True):
         meta   - dict, updated metadata
     '''
 
-    # Read metadata.txt
+    # Read metadata.txt - first try same directory, then parent directory
     meta_file = os.path.join(os.path.dirname(fname), 'metadata.txt')
+    if not os.path.isfile(meta_file):
+        # Try parent directory (for LiCSAR structure where metadata is in GEOC/)
+        meta_file = os.path.join(os.path.dirname(os.path.dirname(fname)), 'metadata.txt')
     licsar_meta = _read_key_value_file(meta_file)
 
     # Add universal metadata
-    meta['PROCESSOR'] = 'LiCSAR'
+    meta['PROCESSOR'] = 'licsar'
 
-    master_date = _parse_date(_get_first(licsar_meta, 'master', 'masterdate'))
-    slave_date = _parse_date(_get_first(licsar_meta, 'slave', 'slavedate'))
-    if slave_date is None:
-        slave_date = _extract_slave_date_from_fname(fname, master_date)
+    # For interferograms, extract dates from filename first (YYYYMMDD_YYYYMMDD pattern)
+    # For geometry files, try to get from metadata
+    fname_master, fname_slave = _extract_dates_from_fname(fname)
+    
+    if fname_master and fname_slave:
+        # Interferogram with dates in filename
+        master_date = fname_master
+        slave_date = fname_slave
+    else:
+        # Geometry file or other product - use metadata
+        master_date = _parse_date(_get_first(licsar_meta, 'master', 'masterdate'))
+        slave_date = _parse_date(_get_first(licsar_meta, 'slave', 'slavedate'))
 
     if master_date:
         meta['MASTER_DATE'] = master_date.strftime('%Y%m%d')
@@ -189,38 +204,70 @@ def add_licsar_metadata(fname, meta, is_ifg=True):
     else:
         meta['AZIMUTH_PIXEL_SIZE'] = sensor.SEN['azimuth_pixel_size']
 
-    # Read baselines.txt for interferogram-specific metadata
+    # Read baselines file for interferogram-specific metadata
+    # LiCSAR baselines file format: frame_master_date acquisition_date perp_baseline temporal_baseline
+    # For an interferogram between dates A and B, we need baselines for both dates relative to frame master
     if is_ifg:
         baseline_file = os.path.join(os.path.dirname(fname), 'baselines.txt')
         if not os.path.isfile(baseline_file):
-            raise FileNotFoundError(f'LiCSAR baseline file not found: {baseline_file}')
+            # Try parent directory (for LiCSAR structure where baselines is in GEOC/)
+            baseline_file = os.path.join(os.path.dirname(os.path.dirname(fname)), 'baselines.txt')
+        if not os.path.isfile(baseline_file):
+            baseline_file = os.path.join(os.path.dirname(fname), 'baselines')
+        if not os.path.isfile(baseline_file):
+            baseline_file = os.path.join(os.path.dirname(os.path.dirname(fname)), 'baselines')
 
-        pair_found = False
-        with open(baseline_file) as f:
-            for line in f:
-                text = line.strip()
-                if not text or text.startswith('#'):
-                    continue
+        if os.path.isfile(baseline_file):
+            # Read all baselines into a dictionary: {acquisition_date: (perp_baseline, temporal_baseline)}
+            baselines_dict = {}
+            frame_master = None
+            with open(baseline_file) as f:
+                for line in f:
+                    text = line.strip()
+                    if not text or text.startswith('#'):
+                        continue
 
-                fields = text.split()
-                if len(fields) < 4:
-                    continue
+                    fields = text.split()
+                    if len(fields) < 4:
+                        continue
 
-                base_master = _parse_date(fields[0])
-                base_slave = _parse_date(fields[1])
-                if master_date and base_master and master_date != base_master:
-                    continue
-                if slave_date and base_slave and slave_date != base_slave:
-                    continue
+                    if frame_master is None:
+                        frame_master = _parse_date(fields[0])
+                    
+                    acq_date = _parse_date(fields[1])
+                    if acq_date:
+                        try:
+                            perp_baseline = float(fields[2])
+                            temp_baseline = float(fields[3])
+                            baselines_dict[acq_date] = (perp_baseline, temp_baseline)
+                        except ValueError:
+                            continue
 
-                meta['P_BASELINE_TOP_HDR'] = fields[2]
-                meta['P_BASELINE_BOTTOM_HDR'] = fields[3]
-                pair_found = True
-                break
-
-        if not pair_found:
+            # For interferogram, compute baseline between master and slave dates
+            if master_date and slave_date and master_date in baselines_dict and slave_date in baselines_dict:
+                perp_master, _ = baselines_dict[master_date]
+                perp_slave, _ = baselines_dict[slave_date]
+                
+                # Perpendicular baseline is the difference
+                perp_baseline = perp_slave - perp_master
+                meta['P_BASELINE_TOP_HDR'] = str(perp_baseline)
+                meta['P_BASELINE_BOTTOM_HDR'] = str(perp_baseline)
+                
+                # Temporal baseline in days
+                if master_date and slave_date:
+                    temp_baseline = (slave_date - master_date).days
+                    meta['T_BASELINE'] = str(temp_baseline)
+            else:
+                # Baseline not found for this pair
+                if master_date and slave_date:
+                    warnings.warn(
+                        f'Baseline info for {master_date.strftime("%Y%m%d")}_{slave_date.strftime("%Y%m%d")} '
+                        f'not found in {baseline_file}.',
+                        category=UserWarning,
+                    )
+        else:
             warnings.warn(
-                f'Baseline info for {os.path.basename(fname)} was not found in {baseline_file}.',
+                f'LiCSAR baseline file not found: {baseline_file}',
                 category=UserWarning,
             )
 
@@ -238,7 +285,10 @@ def prep_licsar(inps):
 
     # For each filename, generate metadata rsc file
     for fname in inps.file:
-        is_ifg = any([x in fname for x in ['unw_phase', 'corr']])
+        # Detect if file is interferogram or coherence
+        # LiCSAR: .geo.unw.tif or .geo.cc.tif
+        # ISCE: unw_phase, corr
+        is_ifg = any([x in fname for x in ['unw_phase', 'corr', '.unw.', '.cc.']])
         meta = readfile.read_gdal_vrt(fname)
         meta = add_licsar_metadata(fname, meta, is_ifg=is_ifg)
 

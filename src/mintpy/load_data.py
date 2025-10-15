@@ -62,6 +62,10 @@ GEOM_DSET_NAME2TEMPLATE_KEY = {
     'shadowMask': 'mintpy.load.shadowMaskFile',
     'waterMask': 'mintpy.load.waterMaskFile',
     'bperp': 'mintpy.load.bperpFile',
+    # LiCSAR-specific: E, N, U basis components for pixel-wise geometry calculation
+    'basisEast': 'mintpy.load.basisEastFile',
+    'basisNorth': 'mintpy.load.basisNorthFile',
+    'basisUp': 'mintpy.load.basisUpFile',
 }
 
 
@@ -156,12 +160,12 @@ def read_subset_box(iDict):
     pix_box, geo_box = subset.read_subset_template2box(iDict['template_file'][0])
 
     # Grab required info to read input geo_box into pix_box
-    lookup_y_files = glob.glob(str(iDict['mintpy.load.lookupYFile']))
-    lookup_x_files = glob.glob(str(iDict['mintpy.load.lookupXFile']))
-    if len(lookup_y_files) > 0 and len(lookup_x_files) > 0:
-        lookup_file = [lookup_y_files[0], lookup_x_files[0]]
-    else:
-        lookup_file = None
+    lookup_file = None
+    if 'mintpy.load.lookupYFile' in iDict and 'mintpy.load.lookupXFile' in iDict:
+        lookup_y_files = glob.glob(str(iDict['mintpy.load.lookupYFile']))
+        lookup_x_files = glob.glob(str(iDict['mintpy.load.lookupXFile']))
+        if len(lookup_y_files) > 0 and len(lookup_x_files) > 0:
+            lookup_file = [lookup_y_files[0], lookup_x_files[0]]
 
     # use DEM file attribute as reference, because
     # 1) it is required AND
@@ -435,6 +439,69 @@ def read_inps_dict2ifgram_stack_dict_object(iDict, ds_name2template_key):
     return stackObj
 
 
+################################################################
+def enhance_licsar_geometry_file(geom_file):
+    """Calculate and add incidence/azimuth angles from E,N,U components for LiCSAR geometry.
+    
+    This function reads the E, N, U basis vector components from the geometry file
+    and calculates:
+    - incidenceAngle: from E,N,U using utils0.incidence_angle_from_enu()
+    - azimuthAngle: from E,N using utils0.azimuth_angle_from_enu()
+    - slantRangeDistance: from incidenceAngle using utils0.incidence_angle2slant_range_distance()
+    
+    Parameters: geom_file - str, path to the geometry HDF5 file
+    Returns:    None (modifies the file in place)
+    """
+    import h5py
+    from mintpy.utils import utils0
+    
+    print(f'Enhancing LiCSAR geometry file: {geom_file}')
+    
+    # Read E, N, U components
+    with h5py.File(geom_file, 'r') as f:
+        if not all(x in f.keys() for x in ['basisEast', 'basisNorth', 'basisUp']):
+            print('Warning: E, N, U components not found in geometry file')
+            return
+        
+        print('Reading E, N, U components...')
+        e_data = f['basisEast'][:]
+        n_data = f['basisNorth'][:]
+        u_data = f['basisUp'][:]
+        atr = dict(f.attrs)
+    
+    # Calculate incidence angle from E, N, U
+    print('Calculating incidence angle from E, N, U...')
+    inc_angle = utils0.incidence_angle_from_enu(e_data, n_data, u_data)
+    
+    # Calculate azimuth angle from E, N, U
+    print('Calculating azimuth angle from E, N, U...')
+    az_angle = utils0.azimuth_angle_from_enu(e_data, n_data, u_data)
+    
+    # Calculate slant range distance from incidence angle
+    print('Calculating slant range distance...')
+    # Add HEIGHT attribute if not present (satellite altitude)
+    if 'HEIGHT' not in atr:
+        # For Sentinel-1, use approximate altitude of 693 km
+        atr['HEIGHT'] = 693000  # in meters
+    slant_range = utils0.incidence_angle2slant_range_distance(atr, inc_angle)
+    
+    # Write the calculated datasets back to the file
+    print('Adding calculated datasets to geometry file...')
+    with h5py.File(geom_file, 'a') as f:
+        # Remove existing datasets if they exist
+        for dname in ['incidenceAngle', 'azimuthAngle', 'slantRangeDistance']:
+            if dname in f.keys():
+                del f[dname]
+        
+        # Create new datasets
+        f.create_dataset('incidenceAngle', data=inc_angle, compression='lzf')
+        f.create_dataset('azimuthAngle', data=az_angle, compression='lzf')
+        f.create_dataset('slantRangeDistance', data=slant_range, compression='lzf')
+    
+    print('Enhanced LiCSAR geometry file with incidence/azimuth angles and slant range distance')
+
+
+################################################################
 def read_inps_dict2geometry_dict_object(iDict, dset_name2template_key):
     """Read input arguments into geometryDict object(s).
 
@@ -452,9 +519,13 @@ def read_inps_dict2geometry_dict_object(iDict, dset_name2template_key):
         # for processors with lookup table in geo-coordinates, remove latitude/longitude
         dset_name2template_key.pop('latitude')
         dset_name2template_key.pop('longitude')
-    elif iDict['processor'] in ['aria', 'gmtsar', 'hyp3', 'snap', 'cosicorr','licsar']:
+    elif iDict['processor'] in ['aria', 'gmtsar', 'hyp3', 'snap', 'cosicorr']:
         # for processors with geocoded products support only, do nothing for now.
         # check again when adding products support in radar-coordiantes
+        pass
+    elif iDict['processor'] == 'licsar':
+        # LiCSAR provides E,N,U components for pixel-wise geometry calculation
+        # The special handling is done in read_inps_dict2geometry_dict_object()
         pass
     else:
         print('Un-recognized InSAR processor: {}'.format(iDict['processor']))
@@ -517,6 +588,8 @@ def read_inps_dict2geometry_dict_object(iDict, dset_name2template_key):
 
     geomGeoObj = None
     geomRadarObj = None
+    
+    # Standard geometry handling
     if len(dsGeoPathDict) > 0:
         geomGeoObj = geometryDict(
             processor=iDict['processor'],
@@ -689,6 +762,12 @@ def load_data(inps):
             ystep=iDict['ystep'],
             compression='lzf',
             extra_metadata=extraDict)
+        
+        # For LiCSAR: Calculate incidence/azimuth angles from E,N,U components
+        if iDict['processor'] == 'licsar' and geom_geo_obj is not None:
+            if all(x in geom_geo_obj.datasetDict.keys() for x in ['basisEast', 'basisNorth', 'basisUp']):
+                print('Calculating incidence and azimuth angles from E, N, U components...')
+                enhance_licsar_geometry_file(geom_geo_file)
 
     if run_or_skip(geom_radar_file, geom_radar_obj, iDict['box'], **kwargs) == 'run':
         geom_radar_obj.write2hdf5(
