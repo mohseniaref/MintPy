@@ -715,8 +715,8 @@ def read_binary_file(fname, datasetName=None, box=None, xstep=1, ystep=1):
         if 'byte order' in atr.keys() and atr['byte order'] == '0':
             byte_order = 'little-endian'
 
-    # GDAL / GMTSAR / ASF HyP3
-    elif processor in ['gdal', 'gmtsar', 'hyp3', 'cosicorr', 'uavsar']:
+    # GDAL / GMTSAR / ASF HyP3 / LiCSAR
+    elif processor in ['gdal', 'gmtsar', 'hyp3', 'cosicorr', 'uavsar', 'licsar']:
         # try to recognize custom dataset names if specified and recognized.
         if datasetName:
             slice_list = get_slice_list(fname)
@@ -734,7 +734,7 @@ def read_binary_file(fname, datasetName=None, box=None, xstep=1, ystep=1):
         xstep=xstep,
         ystep=ystep,
     )
-    if processor in ['gdal', 'gmtsar', 'hyp3', 'cosicorr']:
+    if processor in ['gdal', 'gmtsar', 'hyp3', 'cosicorr', 'licsar']:
         data = read_gdal(fname, **kwargs)
 
     else:
@@ -1634,13 +1634,15 @@ def read_isce_xml(fname):
     # PAMDataset, e.g. hgt.rdr.aux.xml
     elif root.tag == 'PAMDataset':
         meta = root.find("./Metadata[@domain='ENVI']")
-        for child in meta.findall("MDI"):
-            key = child.get('key')
-            value = child.text
-            xmlDict[key] = value
+        if meta is not None:
+            for child in meta.findall("MDI"):
+                key = child.get('key')
+                value = child.text
+                xmlDict[key] = value
 
-        # data_type
-        xmlDict['data_type'] = DATA_TYPE_ENVI2NUMPY[xmlDict['data_type']]
+            # data_type
+            if 'data_type' in xmlDict:
+                xmlDict['data_type'] = DATA_TYPE_ENVI2NUMPY[xmlDict['data_type']]
 
         # NoDataValue
         meta = root.find("./PAMRasterBand/NoDataValue")

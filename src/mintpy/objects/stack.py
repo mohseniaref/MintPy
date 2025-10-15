@@ -58,6 +58,10 @@ GEOMETRY_DSET_NAMES = [
     'waterMask',
     'commonMask',
     'bperp',
+    # LiCSAR-specific: basis vector components
+    'basisEast',
+    'basisNorth',
+    'basisUp',
 ]
 
 IFGRAM_DSET_NAMES = [
