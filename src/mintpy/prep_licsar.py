@@ -193,16 +193,66 @@ def add_licsar_metadata(fname, meta, is_ifg=True):
     meta['PLATFORM'] = 'Sen'
     meta['ANTENNA_SIDE'] = -1
     meta['WAVELENGTH'] = SPEED_OF_LIGHT / sensor.SEN['carrier_frequency']
-    if 'RLOOKS' in meta:
-        looks = _safe_float(meta['RLOOKS'])
-        meta['RANGE_PIXEL_SIZE'] = sensor.SEN['range_pixel_size'] * looks if looks else sensor.SEN['range_pixel_size']
-    else:
-        meta['RANGE_PIXEL_SIZE'] = sensor.SEN['range_pixel_size']
-    if 'ALOOKS' in meta:
-        looks = _safe_float(meta['ALOOKS'])
-        meta['AZIMUTH_PIXEL_SIZE'] = sensor.SEN['azimuth_pixel_size'] * looks if looks else sensor.SEN['azimuth_pixel_size']
-    else:
-        meta['AZIMUTH_PIXEL_SIZE'] = sensor.SEN['azimuth_pixel_size']
+    
+    # Calculate ALOOKS and RLOOKS from ground pixel spacing
+    # LOOKS = (desired ground pixel size) / (native single-look pixel spacing)
+    # For Sentinel-1:
+    #   - range pixel spacing (slant) = 2.3 m
+    #   - range pixel spacing (ground) = slant / sin(incidence)
+    #   - azimuth pixel spacing = 13.9 m
+    import math
+    
+    if 'RLOOKS' not in meta:
+        if 'X_STEP' in meta:
+            x_step_deg = abs(_safe_float(meta['X_STEP']))
+            if x_step_deg:
+                # Convert X_STEP from degrees to meters
+                lat = _safe_float(meta.get('Y_FIRST', 0))
+                x_step_m = x_step_deg * 111320 * math.cos(math.radians(lat)) if lat else x_step_deg * 111320
+                
+                # Get ground range pixel spacing
+                # slant range spacing = 2.3 m, convert to ground range using incidence angle
+                inc_angle = _safe_float(meta.get('AVG_INCIDENCE_ANGLE', 37.0))  # default 37° if not available
+                range_spacing_ground = sensor.SEN['range_pixel_size'] / math.sin(math.radians(inc_angle))
+                
+                # Calculate looks
+                meta['RLOOKS'] = str(int(round(x_step_m / range_spacing_ground)))
+            else:
+                meta['RLOOKS'] = '1'
+        else:
+            meta['RLOOKS'] = '1'
+    
+    if 'ALOOKS' not in meta:
+        if 'Y_STEP' in meta:
+            y_step_deg = abs(_safe_float(meta['Y_STEP']))
+            if y_step_deg:
+                # Convert Y_STEP from degrees to meters (constant 111320 m/degree)
+                y_step_m = y_step_deg * 111320
+                
+                # Azimuth pixel spacing from sensor definition
+                az_spacing = sensor.SEN['azimuth_pixel_size']
+                
+                # Calculate looks
+                meta['ALOOKS'] = str(int(round(y_step_m / az_spacing)))
+            else:
+                meta['ALOOKS'] = '1'
+        else:
+            meta['ALOOKS'] = '1'
+    
+    # Ensure pixel sizes are set (use values from .rsc if available, otherwise calculate from looks)
+    if 'RANGE_PIXEL_SIZE' not in meta:
+        if 'RLOOKS' in meta:
+            looks = _safe_float(meta['RLOOKS'])
+            meta['RANGE_PIXEL_SIZE'] = sensor.SEN['range_pixel_size'] * looks if looks else sensor.SEN['range_pixel_size']
+        else:
+            meta['RANGE_PIXEL_SIZE'] = sensor.SEN['range_pixel_size']
+    
+    if 'AZIMUTH_PIXEL_SIZE' not in meta:
+        if 'ALOOKS' in meta:
+            looks = _safe_float(meta['ALOOKS'])
+            meta['AZIMUTH_PIXEL_SIZE'] = sensor.SEN['azimuth_pixel_size'] * looks if looks else sensor.SEN['azimuth_pixel_size']
+        else:
+            meta['AZIMUTH_PIXEL_SIZE'] = sensor.SEN['azimuth_pixel_size']
 
     # Read baselines file for interferogram-specific metadata
     # LiCSAR baselines file format: frame_master_date acquisition_date perp_baseline temporal_baseline
