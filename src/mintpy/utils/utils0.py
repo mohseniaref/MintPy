@@ -779,6 +779,68 @@ def calc_azimuth_from_east_north_obs(east, north):
     return az_angle
 
 
+def incidence_angle_from_enu(e_data, n_data, u_data):
+    """Calculate incidence angle from LiCSAR East-North-Up unit vector components.
+    
+    For LiCSAR E,N,U unit vectors representing line-of-sight direction:
+    
+    θ = arccos(|U| / √(E² + N² + U²))
+    
+    Since E,N,U are unit vectors: √(E² + N² + U²) ≈ 1
+    Simplified: θ = arccos(|U|)
+    
+    Parameters: e_data, n_data, u_data - 2D np.arrays, LiCSAR unit vectors in radar LOS direction
+    Returns:    inc_angle - 2D np.array, incidence angle in degrees
+    """
+    if e_data is None or n_data is None or u_data is None:
+        return None
+    
+    # Calculate vector magnitude for quality control
+    magnitude = np.sqrt(e_data**2 + n_data**2 + u_data**2)
+    
+    # Calculate incidence angle using the U component
+    # θ = arccos(|U|) for unit vectors
+    inc_angle = np.rad2deg(np.arccos(np.abs(u_data)))
+    
+    # Apply quality mask for proper unit vectors
+    mask = magnitude > 0.5  # Filter out low-quality data
+    inc_angle = np.where(mask, inc_angle, np.nan)
+    
+    return inc_angle.astype(np.float32)
+
+
+def azimuth_angle_from_enu(e_data, n_data, u_data):
+    """Calculate azimuth angle from LiCSAR East-North-Up unit vector components.
+    
+    For LiCSAR E,N,U unit vectors representing line-of-sight direction:
+    
+    α = atan2(E, N)
+    
+    Coordinate convention (following MintPy standards):
+    - North = 0°, East = 90°, South = 180°, West = 270°
+    
+    Parameters: e_data, n_data, u_data - 2D np.arrays, LiCSAR unit vectors in radar LOS direction  
+    Returns:    az_angle - 2D np.array, azimuth angle in degrees [0, 360)
+    """
+    if e_data is None or n_data is None:
+        return None
+    
+    # Calculate azimuth angle using atan2
+    # atan2(E, N) gives angle from North, anti-clockwise positive
+    az_angle = np.rad2deg(np.arctan2(e_data, n_data))
+    
+    # Ensure output is in [0, 360) range
+    az_angle = np.where(az_angle < 0, az_angle + 360, az_angle)
+    
+    # Apply quality mask if U component is available
+    if u_data is not None:
+        magnitude = np.sqrt(e_data**2 + n_data**2 + u_data**2)
+        mask = magnitude > 0.5
+        az_angle = np.where(mask, az_angle, np.nan)
+    
+    return az_angle.astype(np.float32)
+
+
 def get_unit_vector4component_of_interest(los_inc_angle, los_az_angle, comp='enu2los', horz_az_angle=None):
     """Get the unit vector for the component of interest.
     Parameters: los_inc_angle - np.ndarray or float, incidence angle from vertical, in the unit of degrees
