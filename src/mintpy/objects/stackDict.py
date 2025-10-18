@@ -201,6 +201,36 @@ class ifgramStackDict:
                                           mli_method=mli_method,
                                           resize2shape=resize2shape)[0]
 
+                    # special handling for coherence normalization
+                    # LiCSAR stores coherence as uint8 (0-255) for space efficiency
+                    # Normalize to standard 0-1 range
+                    if dsName == 'coherence':
+                        # Check if metadata indicates scaling is needed
+                        ifgram_meta = ifgramObj.get_metadata()
+                        scale_factor = ifgram_meta.get('COHERENCE_SCALE_FACTOR', None)
+                        
+                        # Auto-detect if coherence is scaled (max value > 1.5)
+                        if scale_factor is None:
+                            valid_data = data[data != 0]  # exclude zeros
+                            if valid_data.size > 0:  # check if there are any valid values
+                                max_val = np.nanmax(valid_data)
+                                if max_val > 1.5:
+                                    # Likely scaled, determine scale factor
+                                    if max_val <= 100:
+                                        scale_factor = 100.0
+                                    else:
+                                        scale_factor = 255.0
+                                    if i == 0:  # print once
+                                        print(f'  auto-detected coherence scaling: max_val={max_val:.1f}, scale_factor={scale_factor}')
+                        
+                        # Apply normalization
+                        if scale_factor is not None:
+                            scale_factor = float(scale_factor)
+                            if scale_factor > 1.0:
+                                data = data.astype(np.float32) / scale_factor
+                                if i == 0:  # print once
+                                    print(f'  normalizing coherence from 0-{int(scale_factor)} to 0-1 range')
+
                     # special handling for offset covariance file
                     if dsName.endswith('OffsetStd'):
                         # set no-data value to np.nan

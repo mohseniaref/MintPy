@@ -84,6 +84,11 @@ def create_parser(subparsers=None):
                           help='Enable area ratio-based network modification (default: %(default)s).')
     cohBased.add_argument('--min-area-ratio', dest='minAreaRatio', type=float, default=0.75,
                           help='Minimum area ratio value (default: %(default)s).')
+    # 2.3 NaN-ratio-based
+    cohBased.add_argument('--max-nan-ratio', dest='maxNaNRatio', type=float, default=None,
+                          help='Maximum NaN/invalid pixel ratio (0.0-1.0). '
+                               'Drop interferograms with NaN ratio > threshold. '
+                               'Example: 0.3 drops ifgs with >30%% invalid pixels (default: %(default)s).')
     # common parameters
     cohBased.add_argument('--no-mst', dest='keepMinSpanTree', action='store_false',
                           help='Do not keep interferograms in Min Span Tree network based on inversed mean coherene')
@@ -138,6 +143,7 @@ def cmd_line_parse(iargs=None):
         inps.referenceFile, inps.tempBaseMax, inps.perpBaseMax, inps.connNumMax,
         inps.excludeIfgIndex, inps.excludeDate, inps.excludeDate12, inps.coherenceBased,
         inps.areaRatioBased, inps.startDate, inps.endDate, inps.reset, inps.manual,
+        inps.maxNaNRatio,
     ]
     if all(not i for i in required_args + [inps.template_file]):
         msg = 'No input option found to remove interferogram, exit.\n'
@@ -187,7 +193,7 @@ def read_template2inps(template_file, inps):
             iDict[key] = value
 
         elif value:
-            if key in ['minCoherence', 'minAreaRatio', 'tempBaseMax', 'perpBaseMax']:
+            if key in ['minCoherence', 'minAreaRatio', 'tempBaseMax', 'perpBaseMax', 'maxNaNRatio']:
                 iDict[key] = float(value)
             elif key in ['connNumMax']:
                 iDict[key] = int(value)

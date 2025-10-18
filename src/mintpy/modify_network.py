@@ -234,6 +234,71 @@ def get_date12_to_drop(inps):
         print('Drop ifgrams with date later than: {} ({})\n{}'.format(
             inps.endDate, len(tempList), tempList))
 
+    # NaN/invalid pixel ratio threshold
+    if inps.maxNaNRatio:
+        print('--------------------------------------------------')
+        print(f'use NaN-ratio-based network modification (maxNaNRatio = {inps.maxNaNRatio})')
+
+        # get area of interest for calculation
+        pix_box = get_aoi_pix_box(obj.metadata, inps.lookupFile, inps.aoiYX, inps.aoiLALO)
+
+        # calculate NaN ratio for each interferogram
+        print('calculating NaN ratio for each interferogram...')
+        nan_ratio_list = []
+        prog_bar = ptime.progressBar(maxValue=len(date12ListAll))
+        
+        with h5py.File(inps.file, 'r') as f:
+            for i, date12 in enumerate(date12ListAll):
+                # Read coherence or unwrapPhase dataset
+                if 'coherence' in f.keys():
+                    data = f['coherence'][i, :, :]
+                elif 'unwrapPhase' in f.keys():
+                    data = f['unwrapPhase'][i, :, :]
+                else:
+                    raise ValueError('No coherence or unwrapPhase dataset found in file')
+                
+                # Apply box constraint if provided
+                if pix_box:
+                    data = data[pix_box[1]:pix_box[3], pix_box[0]:pix_box[2]]
+                
+                # Calculate NaN ratio (including zeros as invalid)
+                total_pixels = data.size
+                valid_mask = np.isfinite(data) & (data != 0)
+                valid_pixels = np.sum(valid_mask)
+                nan_ratio = 1.0 - (valid_pixels / total_pixels)
+                nan_ratio_list.append(nan_ratio)
+                
+                prog_bar.update(i+1, suffix=f'{date12} nan_ratio={nan_ratio:.3f}')
+            prog_bar.close()
+        
+        # Filter interferograms based on NaN ratio
+        nan_date12_list = [date12 for date12, ratio in zip(date12ListAll, nan_ratio_list) 
+                          if ratio < inps.maxNaNRatio]
+        
+        # Get MST network if requested
+        # Use inverse of (1 - nan_ratio) as weight (higher valid area = lower weight)
+        valid_area_ratios = [1.0 - ratio for ratio in nan_ratio_list]
+        mst_date12_list, msg = get_mst_date12(inps.keepMinSpanTree, valid_area_ratios, date12ListAll, date12_to_drop,
+                                              min_par=1.0 - inps.maxNaNRatio,
+                                              par_name='valid area ratio')
+        
+        # Drop all dates (above NaN thresh AND not in MST)
+        tempList = sorted(list(set(date12ListAll) - set(nan_date12_list + mst_date12_list)))
+        date12_to_drop += tempList
+        
+        msg += f'({len(tempList)})'
+        if len(tempList) <= 200:
+            msg += f'\n{tempList}'
+        print(msg)
+        
+        # Save NaN ratio list to file
+        nan_file = 'nanRatioSpatialAvg.txt'
+        print(f'write NaN ratio values into text file: {nan_file}')
+        with open(nan_file, 'w') as f:
+            f.write('# date12\tnan_ratio\tvalid_area_ratio\n')
+            for date12, ratio in zip(date12ListAll, nan_ratio_list):
+                f.write(f'{date12}\t{ratio:.6f}\t{1.0-ratio:.6f}\n')
+
     # coherence file
     if inps.coherenceBased:
         print('--------------------------------------------------')
