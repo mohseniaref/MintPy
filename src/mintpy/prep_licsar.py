@@ -341,6 +341,25 @@ def prep_licsar(inps):
         is_ifg = any([x in fname for x in ['unw_phase', 'corr', '.unw.', '.cc.']])
         meta = readfile.read_gdal_vrt(fname)
         meta = add_licsar_metadata(fname, meta, is_ifg=is_ifg)
+        
+        # LiCSAR coherence files store values as uint8 (0-255) for space efficiency
+        # Add metadata to indicate this needs normalization to 0-1 range
+        if any([x in fname for x in ['.cc.', '.cor', 'coherence', 'corr']]):
+            meta['DATA_TYPE'] = 'coherence'
+            # Check if data type is uint8 (byte) which indicates 0-255 scaling
+            try:
+                from osgeo import gdal
+                ds = gdal.Open(fname, gdal.GA_ReadOnly)
+                if ds:
+                    bnd = ds.GetRasterBand(1)
+                    gdal_dtype = bnd.DataType
+                    # gdal.GDT_Byte = 1 (uint8, 0-255)
+                    if gdal_dtype == 1:  # GDT_Byte
+                        meta['COHERENCE_SCALE_FACTOR'] = '255.0'
+                        print(f'  detected uint8 coherence file (0-255 range), will normalize to 0-1 during loading')
+                    ds = None
+            except:
+                pass
 
         # Write
         rsc_file = fname + '.rsc'
