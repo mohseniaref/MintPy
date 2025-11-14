@@ -132,6 +132,20 @@ def add_licsar_metadata(fname, meta, is_ifg=True):
     if center_time:
         meta['CENTER_TIME'] = center_time
 
+        # Add CENTER_LINE_UTC (UTC seconds) for atmospheric correction
+        try:
+            # Parse time string (format: HH:MM:SS.ssssss)
+            time_parts = center_time.split(':')
+            if len(time_parts) == 3:
+                hours = float(time_parts[0])
+                minutes = float(time_parts[1])
+                seconds = float(time_parts[2])
+                utc_seconds = hours * 3600 + minutes * 60 + seconds
+                meta['CENTER_LINE_UTC'] = str(utc_seconds)
+        except (ValueError, IndexError, AttributeError):
+            # If parsing fails, skip CENTER_LINE_UTC
+            pass
+
     heading = _safe_float(_get_first(licsar_meta, 'heading', 'track_heading'))
     if heading is not None:
         heading = heading % 360.0
